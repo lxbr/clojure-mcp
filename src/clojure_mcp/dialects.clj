@@ -18,6 +18,10 @@
   [_]
   "(System/getProperty \"user.dir\")")
 
+(defmethod fetch-project-directory-exp :clr
+  [_]
+  "(System.Environment/get_CurrentDirectory)")
+
 (defmethod fetch-project-directory-exp :default
   [_]
   nil)
@@ -33,6 +37,10 @@
   ["(require 'clojure.repl)"
    "(require 'nrepl.util.print)"])
 
+(defmethod initialize-environment-exp :clr
+  [_]
+  ["(require 'clojure.repl)"])
+
 (defmethod initialize-environment-exp :default
   [_]
   [])
@@ -47,6 +55,12 @@
   [_]
   ;; For Clojure, we load the helpers from resources
   [(slurp (io/resource "clojure-mcp/repl_helpers.clj"))
+   "(in-ns 'user)"])
+
+(defmethod load-repl-helpers-exp :clr
+  [_]
+  ;; For Clojure CLR, we load the CLR-specific helpers
+  [(slurp (io/resource "clojure-mcp/repl_helpers_clr.clj"))
    "(in-ns 'user)"])
 
 (defmethod load-repl-helpers-exp :default
