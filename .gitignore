@@ -5,6 +5,7 @@
 .cpcache
 .eastwood
 .factorypath
+.lsp
 .hg/
 .hgignore
 .java-version
@@ -14,6 +15,9 @@
 .nrepl-history
 .nrepl-port
 .project
+.clj-kondo
+.clojure-mcp
+.projectile
 .rebel_readline_history
 .settings
 .socket-repl-port
@@ -45,3 +49,5 @@ src/user.clj
 NOTES.md
 *.log
 *.tmp
+/.idea/
+/clojure-mcp.iml

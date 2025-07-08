@@ -42,6 +42,59 @@ tools create a new and unique LLM development experience that you
 probably should try at least once to understand how transformational
 it is.
 
+## Table of Contents
+
+- [The Good News](#the-good-news)
+- [🚀 Overview](#-overview)
+- [Main Features](#main-features)
+  - [Why REPL-Driven Development with AI?](#why-repl-driven-development-with-ai)
+- [🧠 Model Compatibility](#-model-compatibility)
+- [Cohesive Clojure Toolbox](#cohesive-clojure-toolbox)
+  - [Why These Tools Work as a Complete System](#why-these-tools-work-as-a-complete-system)
+  - [Using with Claude Code and Other Code Assistants](#using-with-claude-code-and-other-code-assistants)
+- [Help and Community Resources](#help-and-community-resources)
+- [📋 Installation](#-installation)
+  - [Prerequisites](#prerequisites)
+- [Setting up ClojureMCP](#setting-up-clojuremcp)
+  - [Installation Overview](#installation-overview)
+  - [Step 1: Configure Your Target Project's nREPL Connection](#step-1-configure-your-target-projects-nrepl-connection)
+  - [Step 2: Install the Clojure MCP Server](#step-2-install-the-clojure-mcp-server)
+  - [Step 3: Configure Claude Desktop](#step-3-configure-claude-desktop)
+  - [Step 4: Test the Complete Setup](#step-4-test-the-complete-setup)
+  - [Troubleshooting Tips](#troubleshooting-tips)
+  - [Other Clients besides Claude Desktop](#other-clients-besides-claude-desktop)
+- [Starting a new conversation](#starting-a-new-conversation)
+- [Project Summary Management](#project-summary-management)
+- [Chat Session Summarize and Resume](#chat-session-summarize-and-resume)
+- [Working with ClojureScript (shadow-cljs)](#working-with-clojurescript-shadow-cljs)
+  - [Quick Start](#quick-start)
+  - [Switching Back to Clojure](#switching-back-to-clojure)
+  - [Tips for shadow-cljs Development](#tips-for-shadow-cljs-development)
+- [LLM API Keys](#llm-api-keys)
+- [Learning Curve](#learning-curve)
+- [🧰 Available Tools](#-available-tools)
+  - [Read-Only Tools](#read-only-tools)
+  - [Code Evaluation](#code-evaluation)
+  - [File Editing Tools](#file-editing-tools)
+  - [Agent Tools (Require API Keys)](#agent-tools-require-api-keys)
+  - [Experimental Tools](#experimental-tools)
+  - [Key Tool Features](#key-tool-features)
+- [🔧 Customization](#-customization)
+- [⚙️ Configuration](#-configuration)
+  - [Configuration File Location](#configuration-file-location)
+  - [Configuration Options](#configuration-options)
+  - [Example Configuration](#example-configuration)
+  - [Configuration Details](#configuration-details)
+  - [Common Configuration Patterns](#common-configuration-patterns)
+- [📜 Development Practices](#-development-practices)
+  - [Recommended Workflow](#recommended-workflow)
+  - [Best Practices](#best-practices)
+- [🔧 Project Maintenance](#-project-maintenance)
+- [📚 Philosophy](#-philosophy)
+- [📝 License](#-license)
+  - [License Summary](#license-summary)
+
+
 ## The Good News
 
 There is a story that Clojure developers may have come to believe. The
@@ -148,7 +201,10 @@ While you *can* use these tools alongside Claude Code and other code assistants 
 
 Once you're comfortable with the Clojure MCP toolset, you can make informed decisions about whether to use it exclusively or integrate it with other code assistants and development tools based on your specific workflow needs.
 
+## Help and Community Resources
 
+* The [#ai-assited-coding Channel the Clojurians Slack](https://clojurians.slack.com/archives/C068E9L5M2Q) is very active and where I spend a lot of time.
+* The [ClojureMCP Wiki](https://github.com/bhauman/clojure-mcp/wiki) has info on various integrations and sandboxing.
 
 ## 📋 Installation
 
@@ -157,6 +213,7 @@ Once you're comfortable with the Clojure MCP toolset, you can make informed deci
 - [Clojure](https://clojure.org/guides/install_clojure) (1.11 or later)
 - [Java](https://openjdk.org/) (JDK 11 or later)
 - [Claude Desktop](https://claude.ai/download) (for the best experience)
+- **Optional but HIGHLY recommended**: [ripgrep](https://github.com/BurntSushi/ripgrep#installation) for better `grep` and `glob_files` performance
 
 # Setting up ClojureMCP
 
@@ -167,7 +224,8 @@ Setting up ClojureMCP can be challenging as it is currently in alpha and not opt
 1. **Configure nREPL**: Set up and verify an nREPL server on port `7888` in your project
 2. **Install ClojureMCP**: Add `clojure-mcp` to your `~/.clojure/deps.edn`
 3. **Configure MCP Client**: Set up `clojure-mcp` as an MCP server in Claude Desktop or other MCP clients
-
+4. **Install Riggrep (Optional)**: [ripgrep](https://github.com/BurntSushi/ripgrep#installation) is a smart, fast file search tool that respects `.gitignore`. 
+   
 > **Note**: This setup verifies that all components work together. You can customize specific configuration details (like port numbers) after confirming the basic setup works.
 
 ## Step 1: Configure Your Target Project's nREPL Connection
@@ -215,8 +273,8 @@ Add `clojure-mcp` as an alias in your `~/.clojure/deps.edn`:
   {:mcp 
     {:deps {org.slf4j/slf4j-nop {:mvn/version "2.0.16"} ;; Required for stdio server
             com.bhauman/clojure-mcp {:git/url "https://github.com/bhauman/clojure-mcp.git"
-                                     :git/tag "v0.1.4-alpha"
-                                     :git/sha "080b29b"}}
+                                     :git/tag "v0.1.6-alpha"
+                                     :git/sha "4ad62f4"}}
      :exec-fn clojure-mcp.main/start-mcp-server
      :exec-args {:port 7888}}}}
 ```
@@ -268,6 +326,30 @@ If you see output other than JSON-RPC messages, it's likely due to `clojure-mcp`
 - **Shared Filesystem**: Currently, the nREPL and MCP servers must run on the same machine as they assume a shared filesystem.
 - **Dependency Isolation**: Don't include `clojure-mcp` in your project's dependencies. It should run separately with its own deps. Always use `:deps` (not `:extra-deps`) in its alias.
 
+### Command-Line Arguments
+
+The MCP server accepts the following command-line arguments via `clojure -X:mcp`:
+
+| Argument | Type | Description | Default | Example |
+|----------|------|-------------|---------|---------|
+| `:port` | integer | nREPL server port to connect to | 7888 | `:port 7889` |
+| `:host` | string | nREPL server host | "localhost" | `:host "192.168.1.10"` |
+| `:project-dir` | string | Override the working directory (must exist) | Uses nREPL's user.dir | `:project-dir "/path/to/project"` |
+
+**Using `:project-dir`**:
+
+The `:project-dir` option allows you to specify the project root
+directory explicitly, which can be useful when the nREPL server is not
+a Clojure environment and thus ClojureMCP is unable to detect the
+project directory by evaluating `(System/getPRoperty "user-dir")`.
+
+Example with custom project directory:
+```bash
+$ clojure -X:mcp :port 7888 :project-dir "/Users/me/my-clojure-project"
+```
+
+This sets the working directory for all file operations and configuration loading to the specified path.
+
 ## Step 3: Configure Claude Desktop
 
 This is often the most challenging part—ensuring the application's launch environment has the correct PATH and environment variables.
@@ -297,7 +379,7 @@ Create or edit `~/Library/Application\ Support/Claude/claude_desktop_config.json
 
 ### Advanced Configuration Example
 
-If you need to source environment variables (like API keys):
+If you need to source environment variables (like API keys) or specify a custom project directory:
 
 ```json
 {
@@ -306,7 +388,7 @@ If you need to source environment variables (like API keys):
             "command": "/bin/sh",
             "args": [
                 "-c",
-                "source ~/.my-llm-api-keys.sh && PATH=/Users/username/.nix-profile/bin:$PATH && clojure -X:mcp :port 7888"
+                "source ~/.my-llm-api-keys.sh && PATH=/Users/username/.nix-profile/bin:$PATH && clojure -X:mcp :port 7888 :project-dir \"/path/to/project\""
             ]
         }
     }
@@ -402,8 +484,9 @@ This workflow creates a virtuous cycle where each session builds on the accumula
 
 The Clojure MCP server provides a pair of prompts that enable
 conversation continuity across chat sessions using the `scratch_pad`
-tool. This will be stored **in memory**. Things stored in the `scratch_pad`
-are not persisted to disk (yet).
+tool. By default, data is stored **in memory only** for the current session. 
+To persist summaries across server restarts, you must enable scratch pad 
+persistence using the configuration options described in the scratch pad section.
 
 ### How It Works
 
@@ -458,6 +541,67 @@ This enables switching between different development contexts while maintaining 
 - **Reduced Repetition**: No need to re-explain what you're working on
 
 The chat summarization feature complements the PROJECT_SUMMARY.md by capturing conversation-specific context and decisions that haven't yet been formalized into project documentation.
+
+## Working with ClojureScript (shadow-cljs)
+
+ClojureMCP works seamlessly with [shadow-cljs](https://github.com/thheller/shadow-cljs) for ClojureScript development. Here's how to set it up:
+
+### Quick Start
+
+1. **Start your shadow-cljs server** with an nREPL port:
+   ```bash
+   # Start shadow-cljs (it will use port 9000 by default, or configure in shadow-cljs.edn)
+   npx shadow-cljs watch app
+   ```
+
+2. **Configure Claude Desktop or other client** to connect to the the shadow-cljs nREPL port:
+
+   ```
+   {
+    "mcpServers": {
+        "clojure-mcp": {
+            "command": "/bin/sh",
+            "args": [
+                "-c",
+                "PATH=/opt/homebrew/bin:$PATH && clojure -X:mcp :port 9000"
+            ]
+        }
+     }
+   }
+   ```
+
+OR change the shadow port to 7888 (or whatever port you have configured) and leave your client config as is.
+   
+
+3. **Switch to ClojureScript REPL** in Claude Desktop:
+   
+   Once Claude Desktop is connected, prompt Claude to evaluate:
+   ```clojure
+   (shadow/repl :app)
+   ```
+   
+   Replace `:app` with your actual build ID from `shadow-cljs.edn`.
+
+4. **All set!** Now all `clojure_eval` calls will be routed to your ClojureScript REPL, allowing you to:
+   - Evaluate ClojureScript code
+   - Interact with your running application
+   - Use all ClojureMCP tools for ClojureScript development
+
+### Switching Back to Clojure
+
+To exit the ClojureScript REPL and return to Clojure, have Claude evaluate:
+```clojure
+:cljs/quit
+```
+
+### Tips for shadow-cljs Development
+
+- **Build Selection**: Use the appropriate build ID (`:app`, `:main`, `:test`, etc.) based on your `shadow-cljs.edn` configuration
+- **Hot Reload**: shadow-cljs hot reload continues to work normally while using ClojureMCP
+- **Browser Connection**: Ensure your browser is connected to shadow-cljs for browser-targeted builds
+- **Node.js Builds**: Works equally well with Node.js targeted builds
+
+This integration gives you the full power of ClojureMCP's REPL-driven development workflow for ClojureScript projects!
 
 ## LLM API Keys
 
@@ -591,6 +735,7 @@ The default tools included in `main.clj` are organized by category to support di
 
 | Tool Name | Description | Example Usage |
 |-----------|-------------|---------------|
+| `scratch_pad` | Persistent workspace for structured data storage | Task tracking, planning, inter-tool communication with optional file persistence (disabled by default) |
 | `code_critique` | Interactive code review and improvement suggestions | Iterative code quality improvement |
 
 ### Key Tool Features
@@ -612,12 +757,39 @@ The default tools included in `main.clj` are organized by category to support di
 - **Helper Functions**: Built-in namespace and symbol exploration tools
 - **Multiple Expressions**: Evaluates and partitions multiple expressions
 
+#### Shell Commands (`bash`)
+- **Configurable Execution**: Can run over nREPL or locally based on config
+- **Session Isolation**: When using nREPL mode, runs in separate session to prevent REPL interference
+- **Output Truncation**: Consistent 8500 character limit with smart stderr/stdout allocation
+- **Path Security**: Validates filesystem paths against allowed directories
+
 #### Agent System (`dispatch_agent`)
 - **Autonomous Search**: Handles complex, multi-step exploration tasks
 - **Read-only Access**: Agents have read only tool access
 - **Detailed Results**: Returns analysis and findings
 
+#### Scratch Pad (`scratch_pad`)
+- **Persistent Workspace**: Store structured data for planning and inter-tool communication
+- **Memory-Only by Default**: Data is stored in memory only and lost when session ends (default behavior)
+- **Optional File Persistence**: Enable to save data between sessions and server restarts
+- **Path-Based Operations**: Use `set_path`, `get_path`, `delete_path` for precise data manipulation
+- **JSON Compatibility**: Store any JSON-compatible data (objects, arrays, strings, numbers, booleans)
 
+**Default Behavior (Memory-Only):**
+By default, the scratch pad operates in memory only. Data persists during the session but is lost when the MCP server stops.
+
+**Enabling Persistence:**
+
+Add to `.clojure-mcp/config.edn`:
+```edn
+{:scratch-pad-load true    ; false by default
+ :scratch-pad-file "workspace.edn"}  ; defaults to "scratch_pad.edn"
+```
+
+**Persistence Details:**
+- Files are saved in `.clojure-mcp/` directory within your project
+- Changes are automatically saved when persistence is enabled
+- Corrupted files are handled gracefully with error reporting
 
 ## 🔧 Customization
 
@@ -684,6 +856,22 @@ Boolean flag to enable/disable cljfmt formatting in editing pipelines (default: 
 - `true` - Best for maintaining consistent code style across your project
 - `false` - Useful when working with files that have specific formatting requirements or when you want to preserve manual formatting
 
+#### `bash-over-nrepl`
+Boolean flag to control bash command execution mode (default: `true`). This setting determines whether bash commands are executed over the nREPL connection or locally on the MCP server.
+
+**Available values:**
+- `true` (default) - Execute bash commands over nREPL connection with isolated session
+- `false` - Execute bash commands locally in the Clojure MCP server process
+
+**When to use each setting:**
+- `true` - Best for most development scenarios, as it allows you to only sandbox the nrepl server process
+- `false` - Useful when the nREPL server is not a Clojure process, i.e. CLJS, Babashka, Scittle
+
+**Technical details:**
+- When `true`, bash commands run in a separate nREPL session
+- Both modes apply consistent output truncation (8500 chars total, split between stdout/stderr)
+- Local execution may be faster for simple commands but requires the MCP server to have necessary tools installed
+
 #### `write-file-guard`
 Controls the file timestamp tracking behavior (default: `:full-read`). This setting determines when file editing is allowed based on read operations.
 
@@ -699,6 +887,23 @@ Controls the file timestamp tracking behavior (default: `:full-read`). This sett
 
 The timestamp tracking system prevents accidental overwrites when files are modified by external processes (other developers, editors, git operations, etc.).
 
+#### `scratch-pad-load`
+Boolean flag to enable/disable scratch pad persistence on startup (default: `false`).
+
+**Available values:**
+- `false` (default) - Scratch pad operates in memory only, no file persistence
+- `true` - Loads existing data on startup and saves changes to disk
+
+**When to use each setting:**
+- `false` - Best for temporary planning and session-only data
+- `true` - When you want data to persist across sessions and server restarts
+
+#### `scratch-pad-file`
+Filename for scratch pad persistence (default: `"scratch_pad.edn"`).
+
+**Configuration:**
+- Specifies the filename within `.clojure-mcp/` directory
+
 ### Example Configuration
 
 ```edn
@@ -711,7 +916,10 @@ The timestamp tracking system prevents accidental overwrites when files are modi
                        "../sibling-project"]
  :emacs-notify false
  :write-file-guard :full-read
- :cljfmt true}
+ :cljfmt true
+ :bash-over-nrepl true
+ :scratch-pad-load false  ; Default: false (memory-only)
+ :scratch-pad-file "scratch_pad.edn"}
 ```
 
 ### Configuration Details
@@ -743,10 +951,13 @@ The timestamp tracking system prevents accidental overwrites when files are modi
                        "docs"]
  :emacs-notify false
  :write-file-guard :full-read
- :cljfmt true}
+ :cljfmt true
+ :bash-over-nrepl true
+ :scratch-pad-load false  ; Memory-only scratch pad
+ :scratch-pad-file "scratch_pad.edn"}
 ```
 
-#### Multi-Project Setup
+#### Multi-Project Setup with Persistence
 ```edn
 {:allowed-directories ["."
                        "../shared-utils"
@@ -754,7 +965,10 @@ The timestamp tracking system prevents accidental overwrites when files are modi
                        "/home/user/reference-code"]
  :emacs-notify false
  :write-file-guard :partial-read
- :cljfmt true}
+ :cljfmt true
+ :bash-over-nrepl true
+ :scratch-pad-load true  ; Enable file persistence
+ :scratch-pad-file "workspace.edn"}
 ```
 
 #### Restricted Mode (Extra Security)
@@ -763,7 +977,10 @@ The timestamp tracking system prevents accidental overwrites when files are modi
                        "test"]
  :emacs-notify false
  :write-file-guard :full-read
- :cljfmt false}  ; Preserve original formatting
+ :cljfmt false        ; Preserve original formatting
+ :bash-over-nrepl false  ; Use local execution only
+ :scratch-pad-load false  ; No persistence
+ :scratch-pad-file "scratch_pad.edn"}
 ```
 
 **Note**: Configuration is loaded when the MCP server starts. Restart the server after making configuration changes.

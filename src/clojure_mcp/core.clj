@@ -2,10 +2,12 @@
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [clojure-mcp.nrepl :as nrepl]
             [clojure-mcp.config :as config]
+            [clojure-mcp.dialects :as dialects]
             [clojure-mcp.file-content :as file-content])
   (:import [io.modelcontextprotocol.server.transport
             StdioServerTransportProvider]
@@ -231,52 +233,60 @@
       (log/error e "Failed to initialize MCP server")
       (throw e))))
 
+;; Setting up a server
+;; this could be in a new namespace
+
+(defn fetch-config [nrepl-client-map config-file cli-env-type env-type project-dir]
+  (let [user-dir (dialects/fetch-project-directory nrepl-client-map env-type project-dir)]
+    (when-not user-dir
+      (log/warn "Could not determine working directory")
+      (throw (ex-info "No project directory!!" {})))
+    (log/info "Working directory set to:" user-dir)
+    (let [config (config/load-config config-file user-dir)
+          final-env-type (or cli-env-type
+                             (if (contains? config :nrepl-env-type)
+                               (:nrepl-env-type config)
+                               env-type))]
+      (assoc nrepl-client-map ::config/config (assoc config :nrepl-env-type final-env-type)))))
+
 (defn create-and-start-nrepl-connection
   "Convenience higher-level API function to create and initialize an nREPL connection.
    
    This function handles the complete setup process including:
    - Creating the nREPL client connection
    - Starting the polling mechanism
-   - Loading required namespaces and helpers
+   - Loading required namespaces and helpers (if Clojure environment)
    - Setting up the working directory
-   - Loading remote configuration
+   - Loading configuration
    
-   Takes initial-config map with :port and optional :host.
+   Takes initial-config map with :port and optional :host, :project-dir, :nrepl-env-type, :config-file.
    Returns the configured nrepl-client-map with ::config/config attached."
-  [initial-config]
+  [{:keys [project-dir config-file] :as initial-config}]
   (log/info "Creating nREPL connection with config:" initial-config)
   (try
-    (let [nrepl-client-map (nrepl/create initial-config)]
-      (log/info "nREPL client map created")
-      (nrepl/start-polling nrepl-client-map)
-      (log/info "Started polling nREPL")
-
-      (log/debug "Loading necessary namespaces and helpers")
-      (nrepl/eval-code nrepl-client-map
-                       (str
-                        "(require 'clojure.repl)"
-                        "(require 'nrepl.util.print)")
-                       identity)
-      (nrepl/tool-eval-code nrepl-client-map (slurp (io/resource "clojure-mcp/repl_helpers.clj")))
-      (nrepl/tool-eval-code nrepl-client-map "(in-ns 'user)")
-      (log/debug "Required namespaces loaded")
-
-      (let [user-dir (try
-                       (edn/read-string
-                        (nrepl/tool-eval-code
-                         nrepl-client-map
-                         "(System/getProperty \"user.dir\")"))
-                       (catch Exception e
-                         (log/warn e "Failed to get user.dir")
-                         nil))]
-        (if user-dir
-          (log/info "Working directory set to:" user-dir)
-          (do
-            (log/warn "Could not determine working directory")
-            (throw (ex-info "No user directory!!" {}))))
-        (assoc nrepl-client-map
-               ::config/config
-               (config/load-remote-config nrepl-client-map user-dir))))
+    (let [nrepl-client-map (nrepl/create (dissoc initial-config :project-dir :nrepl-env-type))
+          cli-env-type (:nrepl-env-type initial-config)
+          _ (do
+              (log/info "nREPL client map created")
+              (nrepl/start-polling nrepl-client-map)
+              (log/info "Started polling nREPL"))
+          ;; Detect environment type early
+          ;; TODO this needs to be sorted out
+          env-type (or cli-env-type
+                       (if (nrepl/clojure-env? nrepl-client-map)
+                         :clj
+                         :unknown))
+          nrepl-client-map-with-config (fetch-config nrepl-client-map
+                                                     config-file
+                                                     cli-env-type
+                                                     env-type
+                                                     project-dir)
+          nrepl-env-type' (config/get-config nrepl-client-map-with-config :nrepl-env-type)]
+      (log/debug "Initializing Clojure environment")
+      (dialects/initialize-environment nrepl-client-map-with-config nrepl-env-type')
+      (dialects/load-repl-helpers nrepl-client-map-with-config nrepl-env-type')
+      (log/debug "Environment initialized")
+      nrepl-client-map-with-config)
     (catch Exception e
       (log/error e "Failed to create nREPL connection")
       (throw e))))
@@ -322,4 +332,91 @@
       (log/error e "Error during server shutdown")
       (throw e))))
 
+(s/def ::port pos-int?)
+(s/def ::host string?)
+(s/def ::nrepl-env-type keyword?)
+(s/def ::project-dir (s/and string?
+                            #(try (let [f (io/file %)]
+                                    (and (.exists f) (.isDirectory f)))
+                                  (catch Exception _ false))))
+(s/def ::config-file (s/and string?
+                            #(try (let [f (io/file %)]
+                                    (and (.exists f) (.isFile f)))
+                                  (catch Exception _ false))))
+(s/def ::nrepl-args (s/keys :req-un [::port]
+                            :opt-un [::host ::config-file ::project-dir ::nrepl-env-type]))
 
+(def nrepl-client-atom (atom nil))
+
+(defn coerce-options [{:keys [project-dir config-file] :as opts}]
+  (cond-> opts
+    (symbol? project-dir)
+    (assoc :project-dir (str project-dir))
+    (symbol? config-file)
+    (assoc :config-file (str config-file))))
+
+(defn validate-options
+  "Validates the options map for build-and-start-mcp-server.
+   Throws an exception with spec explanation if validation fails."
+  [opts]
+  (let [opts (coerce-options opts)]
+    (if-not (s/valid? ::nrepl-args opts)
+      (let [explanation (s/explain-str ::nrepl-args opts)]
+        (println "Invalid options:" explanation)
+        (log/error "Invalid options:" explanation)
+        (throw (ex-info "Invalid options for MCP server"
+                        {:explanation explanation
+                         :spec-data (s/explain-data ::nrepl-args opts)})))
+      opts)))
+
+(defn build-and-start-mcp-server
+  "Builds and starts an MCP server with the provided configuration.
+   
+   This is the main entry point for creating custom MCP servers. It handles:
+   - Validating input options
+   - Creating and starting the nREPL connection
+   - Setting up the working directory
+   - Calling factory functions to create tools, prompts, and resources
+   - Registering everything with the MCP server
+   
+   Args:
+   - nrepl-args: Map with connection settings
+     - :port (required) - nREPL server port
+     - :host (optional) - nREPL server host (defaults to localhost)
+     - :project-dir (optional) - Root directory for the project (must exist)
+   
+   - config: Map with factory functions
+     - :make-tools-fn - (fn [nrepl-client-atom working-dir] ...) returns seq of tools
+     - :make-prompts-fn - (fn [nrepl-client-atom working-dir] ...) returns seq of prompts  
+     - :make-resources-fn - (fn [nrepl-client-atom working-dir] ...) returns seq of resources
+   
+   All factory functions are optional. If not provided, that category won't be populated.
+   
+   Side effects:
+   - Stores the nREPL client in core/nrepl-client-atom
+   - Starts the MCP server on stdio
+   
+   Returns: nil"
+  [nrepl-args {:keys [make-tools-fn
+                      make-prompts-fn
+                      make-resources-fn]}]
+  ;; the nrepl-args are a map with :port and optional :host
+  (let [nrepl-args (validate-options nrepl-args)
+        nrepl-client-map (create-and-start-nrepl-connection nrepl-args)
+        working-dir (config/get-nrepl-user-dir nrepl-client-map)
+        _ (reset! nrepl-client-atom nrepl-client-map)
+        resources (when make-resources-fn
+                    (doall (make-resources-fn nrepl-client-atom working-dir)))
+        tools (when make-tools-fn
+                (doall (make-tools-fn nrepl-client-atom working-dir)))
+        prompts (when make-prompts-fn
+                  (doall (make-prompts-fn nrepl-client-atom working-dir)))
+        mcp (mcp-server)]
+    (doseq [tool tools]
+      (add-tool mcp tool))
+    (doseq [resource resources]
+      (add-resource mcp resource))
+    (doseq [prompt prompts]
+      (add-prompt mcp prompt))
+    (swap! nrepl-client-atom assoc :mcp-server mcp)
+    nil))

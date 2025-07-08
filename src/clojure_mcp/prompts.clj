@@ -3,7 +3,9 @@
   (:require [clojure.string :as str]
             [clojure.java.io :as io]
             [pogonos.core :as pg]
-            [clojure-mcp.config :as config])) ; Added config require
+            [clojure-mcp.config :as config]
+            [clojure-mcp.tools.scratch-pad.tool :as scratch-pad]
+            [clojure-mcp.tools.scratch-pad.core :as scratch-pad-core]))
 
 (defn simple-content-prompt-fn
   "Returns a prompt-fn that ignores request arguments and returns
@@ -72,12 +74,12 @@
                (load-prompt-from-resource "clojure-mcp/prompts/test_modifier.md"))})
 
 #_(def incremental-file-creation
-  {:name "incremental_file_creation"
-   :description "Guide for creating Clojure files incrementally to maximize success."
-   :arguments [] ;; No arguments needed for this prompt
-   :prompt-fn (simple-content-prompt-fn
-               "Incremental File Creation for Clojure"
-               (load-prompt-from-resource "clojure-mcp/prompts/system/incremental_file_creation.md"))})
+    {:name "incremental_file_creation"
+     :description "Guide for creating Clojure files incrementally to maximize success."
+     :arguments [] ;; No arguments needed for this prompt
+     :prompt-fn (simple-content-prompt-fn
+                 "Incremental File Creation for Clojure"
+                 (load-prompt-from-resource "clojure-mcp/prompts/system/incremental_file_creation.md"))})
 
 (def scratch-pad-guide
   {:name "use-scratch-pad"
@@ -141,3 +143,139 @@ Also we stored information about our last conversation in the scratch_pad [\"%s\
 After doing this provide a very brief (8 lines) summary of where we are and then wait for my instructions."
                                                  session-key
                                                  session-key)}]})))})
+
+(defn add-dir [nrepl-client-atom]
+  {:name "add-dir"
+   :description "Adds a directory to the allowed-directories list, giving the LLM access to it"
+   :arguments [{:name "directory"
+                :description "Directory path to add (can be relative or absolute)"
+                :required? true}]
+   :prompt-fn (fn [_ request-args clj-result-k]
+                (let [dir-path (get request-args "directory")
+                      user-dir (config/get-nrepl-user-dir @nrepl-client-atom)
+                      ;; Normalize path similar to config/relative-to
+                      normalized-path (try
+                                        (let [f (io/file dir-path)]
+                                          (if (.isAbsolute f)
+                                            (.getCanonicalPath f)
+                                            (.getCanonicalPath (io/file user-dir dir-path))))
+                                        (catch Exception _
+                                          nil))]
+                  (if normalized-path
+                    (let [dir-file (io/file normalized-path)]
+                      (if (.exists dir-file)
+                        (if (.isDirectory dir-file)
+                          (let [current-dirs (config/get-allowed-directories @nrepl-client-atom)
+                                new-dirs (-> (concat current-dirs [normalized-path])
+                                             distinct
+                                             vec)]
+                            (config/set-config! nrepl-client-atom :allowed-directories new-dirs)
+                            (clj-result-k
+                             {:description (str "Added directory: " normalized-path)
+                              :messages [{:role :assistant
+                                          :content (format "Directory '%s' has been added to allowed directories. You now have access to read and write files in this directory and its subdirectories."
+                                                           normalized-path)}]}))
+                          (clj-result-k
+                           {:description (str "Path is not a directory: " normalized-path)
+                            :messages [{:role :assistant
+                                        :content (format "The path '%s' exists but is not a directory. Please provide a valid directory path."
+                                                         normalized-path)}]}))
+                        (clj-result-k
+                         {:description (str "Directory does not exist: " normalized-path)
+                          :messages [{:role :assistant
+                                      :content (format "The directory '%s' does not exist. Please provide a valid existing directory path."
+                                                       normalized-path)}]})))
+                    (clj-result-k
+                     {:description "Failed to normalize path"
+                      :messages [{:role :assistant
+                                  :content (format "Failed to normalize the path '%s'. Please check the path and try again."
+                                                   dir-path)}]}))))})
+
+(defn scratch-pad-load [nrepl-client-atom]
+  {:name "scratch_pad_load"
+   :description "Loads a file into the scratch pad state. Returns status messages and a shallow inspect of the loaded data."
+   :arguments [{:name "file_path"
+                :description "Optional file path: default scratch_pad.edn"
+                :required? false}]
+   :prompt-fn (fn [_ request-args clj-result-k]
+                (let [working-directory (config/get-nrepl-user-dir @nrepl-client-atom)
+                      file-path (get request-args "file_path")
+                      filename (if (str/blank? file-path)
+                                 (config/get-scratch-pad-file @nrepl-client-atom)
+                                 file-path)
+                      ;; Handle relative vs absolute paths
+                      file (if (and filename (.isAbsolute (io/file filename)))
+                             (io/file filename)
+                             (scratch-pad/scratch-pad-file-path working-directory filename))]
+                  (try
+                    ;; Load the file
+                    (if (.exists file)
+                      (let [data (clojure.edn/read-string (slurp file))
+                            ;; Update the scratch pad atom
+                            _ (scratch-pad/update-scratch-pad! nrepl-client-atom (constantly data))
+                            ;; Get shallow inspect of the data
+                            inspect-result (:result (scratch-pad-core/execute-inspect data 1 nil))]
+                        (clj-result-k
+                         {:description (str "Loaded scratch pad from: " (.getPath file))
+                          :messages [{:role :assistant
+                                      :content (format "Successfully loaded scratch pad from '%s'.\n\nShallow inspect of loaded data:\n%s"
+                                                       (.getPath file)
+                                                       (:tree inspect-result))}]}))
+                      ;; File doesn't exist
+                      (clj-result-k
+                       {:description (str "File not found: " (.getPath file))
+                        :messages [{:role :assistant
+                                    :content (format "The file '%s' does not exist. No data was loaded into the scratch pad."
+                                                     (.getPath file))}]}))
+                    (catch Exception e
+                      ;; Error loading or parsing file
+                      (clj-result-k
+                       {:description (str "Error loading file: " (.getMessage e))
+                        :messages [{:role :assistant
+                                    :content (format "Failed to load scratch pad from '%s'.\nError: %s\n\nThe file may be corrupted or contain invalid EDN data."
+                                                     (.getPath file)
+                                                     (.getMessage e))}]})))))})
+
+(defn scratch-pad-save-as [nrepl-client-atom]
+  {:name "scratch_pad_save_as"
+   :description "Saves the current scratch pad state to a specified file."
+   :arguments [{:name "file_path"
+                :description "File path: relative to .clojure-mcp/ directory"
+                :required? true}]
+   :prompt-fn (fn [_ request-args clj-result-k]
+                (let [working-directory (config/get-nrepl-user-dir @nrepl-client-atom)
+                      file-path (get request-args "file_path")]
+                  (if (str/blank? file-path)
+                    (clj-result-k
+                     {:description "Missing required file_path"
+                      :messages [{:role :assistant
+                                  :content "Error: file_path is required. Please specify where to save the scratch pad data."}]})
+                    (let [;; Handle relative vs absolute paths
+                          file (if (.isAbsolute (io/file file-path))
+                                 (io/file file-path)
+                                 (scratch-pad/scratch-pad-file-path working-directory file-path))
+                          ;; Get current scratch pad data
+                          current-data (scratch-pad/get-scratch-pad nrepl-client-atom)]
+                      (try
+                        ;; Create parent directory if needed
+                        (let [dir (.getParentFile file)]
+                          (when-not (.exists dir)
+                            (.mkdirs dir)))
+                        ;; Save the data
+                        (spit file (pr-str current-data))
+                        ;; Get shallow inspect for confirmation
+                        (let [inspect-result (:result (scratch-pad-core/execute-inspect current-data 1 nil))]
+                          (clj-result-k
+                           {:description (str "Saved scratch pad to: " (.getPath file))
+                            :messages [{:role :assistant
+                                        :content (format "Successfully saved scratch pad to '%s'.\n\nShallow inspect of saved data:\n%s"
+                                                         (.getPath file)
+                                                         (:tree inspect-result))}]}))
+                        (catch Exception e
+                          ;; Error saving file
+                          (clj-result-k
+                           {:description (str "Error saving file: " (.getMessage e))
+                            :messages [{:role :assistant
+                                        :content (format "Failed to save scratch pad to '%s'.\nError: %s"
+                                                         (.getPath file)
+                                                         (.getMessage e))}]})))))))})

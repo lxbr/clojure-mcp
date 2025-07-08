@@ -5,7 +5,10 @@
    [clojure-mcp.tools.scratch-pad.core :as core]
    [clojure.tools.logging :as log]
    [clojure.walk :as walk]
-   [clojure.pprint :as pprint]))
+   [clojure.pprint :as pprint]
+   [clojure.java.io :as io]
+   [clojure.edn :as edn]
+   [clojure-mcp.config :as config]))
 
 (defn get-scratch-pad
   "Gets the current scratch pad data from the nrepl-client.
@@ -17,6 +20,52 @@
   "Updates the scratch pad data in the nrepl-client-atom."
   [nrepl-client-atom f & args]
   (apply swap! nrepl-client-atom update ::scratch-pad f args))
+
+(defn scratch-pad-file-path
+  "Returns the path to the scratch pad persistence file"
+  [working-directory filename]
+  (io/file working-directory ".clojure-mcp" filename))
+
+(defn save-scratch-pad!
+  "Saves the scratch pad data to disk"
+  [working-directory filename data nrepl-client-atom]
+  (try
+    (let [file (scratch-pad-file-path working-directory filename)
+          dir (.getParentFile file)]
+      (when-not (.exists dir)
+        (.mkdirs dir))
+      (spit file (pr-str data))
+      (log/debug "Saved scratch pad to" (.getPath file)))
+    (catch Exception e
+      (log/error e "Failed to save scratch pad")
+      (when nrepl-client-atom
+        (remove-watch nrepl-client-atom ::scratch-pad-persistence)))))
+
+(defn load-scratch-pad
+  "Loads the scratch pad data from disk if it exists. Returns [data error?]"
+  [working-directory filename]
+  (try
+    (let [file (scratch-pad-file-path working-directory filename)]
+      (if (.exists file)
+        (let [data (edn/read-string (slurp file))]
+          (log/debug "Loaded scratch pad from" (.getPath file))
+          data)
+        (do
+          (log/debug "No existing scratch pad file found")
+          {})))
+    (catch Exception e
+      (log/error e "Failed to load scratch pad")
+      {})))
+
+(defn setup-persistence-watch!
+  "Sets up a watch on the atom to save scratch pad changes to disk"
+  [nrepl-client-atom working-directory filename]
+  (add-watch nrepl-client-atom ::scratch-pad-persistence
+             (fn [_key _ref old-state new-state]
+               (let [old-data (::scratch-pad old-state)
+                     new-data (::scratch-pad new-state)]
+                 (when (not= old-data new-data)
+                   (save-scratch-pad! working-directory filename new-data nrepl-client-atom))))))
 
 (defmethod tool-system/tool-name :scratch-pad [_]
   "scratch_pad")
@@ -141,12 +190,12 @@ Viewing tasks:
   {:type "object"
    :properties {"op" {:type "string"
                       :enum ["set_path" "get_path" "delete_path" "inspect"]
-                      :description "The operation to perform either\n * set_path: set a value at a path\n * get_path: retrieve a value at a path\n * delete_path: remove the value at the path the data structure\n * inspect: view the datastructure (or a specific path within it) up to a certain depth"}
+                      :description "The operation to perform:\n * set_path: set a value at a path\n * get_path: retrieve a value at a path\n * delete_path: remove the value at the path from the data structure\n * inspect: view the datastructure (or a specific path within it) up to a certain depth\n"}
                 "path" {:type "array"
-                        :items {:type ["string" "number"]}
-                        :description "Path to the data location (array of string or number keys) this works for all operations including inspect"}
-                "value" {:description "Value to store (for set_path). Can be aany JSON value EXCEPT null: object, array, string, number, boolean."
-                         :type ["object" "array" "string" "number" "boolean"]}
+                        :items {:type "string" #_["string" "number"]}
+                        :description "Path to the data location (array of string or number keys) - used for set_path, get_path, delete_path, and optionally inspect"}
+                "value" {:description "Value to store (for set_path). Can be ANY JSON value EXCEPT null: object, array, string, number, boolean."
+                         :type "object" #_["object" "array" "string" "number" "boolean"]}
                 "explanation" {:type "string"
                                :description "Explanation of why this operation is being performed"}
                 "depth" {:type "number"
@@ -163,7 +212,7 @@ Viewing tasks:
                     (:path inputs))
                  (assoc inputs :op "delete_path")
                  inputs)
-        {:keys [op path value explanation depth]} inputs]
+        {:keys [op path value explanation depth enabled filename]} inputs]
 
     ;; Check required parameters
     (when-not op
@@ -190,7 +239,7 @@ Viewing tasks:
       "inspect" (when depth
                   (when-not (and (number? depth) (integer? depth) (pos? depth))
                     (throw (ex-info "Depth must be a positive integer greater than 0"
-                                    {:depth depth :inputs inputs})))))
+                                    {:depth depth :inputs inputs}))))) ;; no validation needed for status
 
     ;; Validate path has at least one element when provided
     (when (and path (empty? path) (not= op "inspect"))
@@ -209,7 +258,7 @@ Viewing tasks:
       path (assoc :path (vec path))
       (and (= op "inspect") (nil? depth)) (assoc :depth 5))))
 
-(defmethod tool-system/execute-tool :scratch-pad [{:keys [nrepl-client-atom]} {:keys [op path value explanation depth]}]
+(defmethod tool-system/execute-tool :scratch-pad [{:keys [nrepl-client-atom working-directory]} {:keys [op path value explanation depth enabled filename]}]
   (try
     (let [current-data (get-scratch-pad nrepl-client-atom)
           exec-result (case op
@@ -244,7 +293,7 @@ Viewing tasks:
      :error true}
     (try
       (cond
-      ;; set_path - return pprinted parent value
+        ;; set_path - return pprinted parent value
         (:stored-at result)
         {:result [(try
                     (with-out-str (clojure.pprint/pprint (:parent-value result)))
@@ -254,17 +303,17 @@ Viewing tasks:
                       (pr-str (:parent-value result))))]
          :error false}
 
-      ;; get_path - return pprinted value
+        ;; get_path - return pprinted value
         (contains? result :value)
         {:result [(or (:pretty-value result) "nil")]
          :error false}
 
-      ;; delete_path - return removed message only
+        ;; delete_path - return removed message only
         (:removed-from result)
         {:result [(str "Removed value at path " (:removed-from result))]
          :error false}
 
-      ;; inspect - return pprinted truncated view only
+        ;; inspect - return pprinted truncated view only
         (:tree result)
         {:result [(:tree result)]
          :error false})
@@ -311,116 +360,28 @@ Viewing tasks:
                                                  [(:error-details data)])))]
                       (callback error-msgs true))))))})
 
-(defn create-scratch-pad-tool [nrepl-client-atom]
+(defn create-scratch-pad-tool [nrepl-client-atom working-directory]
   {:tool-type :scratch-pad
-   :nrepl-client-atom nrepl-client-atom})
+   :nrepl-client-atom nrepl-client-atom
+   :working-directory working-directory})
 
 (defn scratch-pad-tool
   "Returns the registration map for the scratch pad tool.
    
    Parameters:
-   - nrepl-client-atom: Atom containing the nREPL client"
-  [nrepl-client-atom]
-  (tool-system/registration-map (create-scratch-pad-tool nrepl-client-atom)))
+   - nrepl-client-atom: Atom containing the nREPL client
+   - working-directory: The working directory for file persistence"
+  [nrepl-client-atom working-directory]
+  ;; Check if persistence is enabled via config
+  (let [load? (config/get-scratch-pad-load @nrepl-client-atom)
+        filename (config/get-scratch-pad-file @nrepl-client-atom)]
+    ;; persist by default
+    ;; load by config
+    (setup-persistence-watch! nrepl-client-atom working-directory filename)
+    (when load?
+      (let [existing-data (load-scratch-pad working-directory filename)]
+        (if (seq existing-data)
+          (swap! nrepl-client-atom assoc ::scratch-pad existing-data)
+          (save-scratch-pad! working-directory filename {} nrepl-client-atom)))))
 
-(comment
-  ;; Usage examples with JSON values:
-  ;; Store a simple string
-  {:op "set_path"
-   :path ["user" "name"]
-   :value "Alice"
-   :explanation "Setting user name"}
-
-  ;; Store an object (JSON object becomes Clojure map with string keys)
-  {:op "set_path"
-   :path ["config"]
-   :value {"theme" "dark" "fontSize" 14}
-   :explanation "Storing user preferences"}
-
-  ;; Store an array
-  {:op "set_path"
-   :path ["tags"]
-   :value ["clojure" "mcp" "tools"]
-   :explanation "Setting project tags"}
-
-  ;; === TASK LIST WORKFLOW EXAMPLE WITH ARRAYS ===
-
-  ;; 1. Initialize todos as empty array
-  {:op "set_path"
-   :path ["todos"]
-   :value []
-   :explanation "Initialize empty todo list"}
-
-  ;; 2. Add first todo item to array
-  {:op "set_path"
-   :path ["todos" 0]
-   :value {"task" "Implement user authentication" "done" false "priority" "high"}
-   :explanation "Starting authentication work"}
-
-  ;; 3. Add multiple todos at once as array
-  {:op "set_path"
-   :path ["todos"]
-   :value [{"task" "Implement authentication" "done" false "priority" "high"}
-           {"task" "Write unit tests" "done" false "priority" "medium"
-            "subtasks" [{"task" "Test login flow" "done" false}
-                        {"task" "Test logout flow" "done" false}]}
-           {"task" "Update documentation" "done" false}]
-   :explanation "Setting up complete todo list"}
-
-  ;; 4. Check off first task (boolean value)
-  {:op "set_path"
-   :path ["todos" 0 "done"]
-   :value true
-   :explanation "Completed authentication implementation"}
-
-  ;; 5. Mark subtask as done
-  {:op "set_path"
-   :path ["todos" 1 "subtasks" 0 "done"]
-   :value true
-   :explanation "Completed login flow tests"}
-
-  ;; 6. Add context to a task
-  {:op "set_path"
-   :path ["todos" 0 "context"]
-   :value "Used OAuth2 with JWT tokens"
-   :explanation "Adding implementation details"}
-
-  ;; 7. Append new todo to array
-  {:op "set_path"
-   :path ["todos" 3]
-   :value {"task" "Deploy to production" "done" false "priority" "high"}
-   :explanation "Adding deployment task"}
-
-  ;; 8. View all todos
-  {:op "get_path"
-   :path ["todos"]
-   :explanation "Get all todo items"}
-
-  ;; 9. View specific todo with subtasks
-  {:op "get_path"
-   :path ["todos" 1]
-   :explanation "Get task with subtasks"}
-
-  ;; 10. Inspect with depth limit
-  {:op "inspect"
-   :path ["todos"]
-   :depth 2
-   :explanation "View todos structure with limited depth"}
-
-  ;; === OTHER OPERATIONS ===
-
-  ;; Get a specific value
-  {:op "get_path"
-   :path ["user" "name"]
-   :explanation "Retrieving user name"}
-
-  ;; Store nested data
-  {:op "set_path"
-   :path ["metrics" "performance"]
-   :value {"cpu" 45.2 "memory" 78 "disk" 92}
-   :explanation "Recording system metrics"}
-
-  ;; Remove a value
-  {:op "delete_path"
-   :path ["config" "old-setting"]
-   :explanation "Removing deprecated config"})
+  (tool-system/registration-map (create-scratch-pad-tool nrepl-client-atom working-directory)))
